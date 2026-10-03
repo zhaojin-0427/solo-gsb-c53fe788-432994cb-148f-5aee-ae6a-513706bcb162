@@ -61,11 +61,6 @@ function fmtTime(ms) {
   return `${(ms / 1000).toFixed(3)} s`;
 }
 
-function round6(x) {
-  // strip binary-float noise beyond microseconds without truncating
-  return Math.round(x * 1e6) / 1e6;
-}
-
 function toast(msg) {
   const t = $("#errorToast");
   t.textContent = msg;
@@ -314,6 +309,9 @@ function startDrag(evt) {
     state.dragging = false;
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    // drag end: re-send the exact current instant so the readout settles
+    // on it even if the final move's request was skipped or throttled
+    requestEval(true);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -362,9 +360,9 @@ function seekTo(t) {
 
 function updateClockAndHead() {
   $("#clock").textContent = fmtTime(state.time);
-  // show the exact playhead position (trimmed to 6 fractional digits just
-  // to avoid float noise like 1.5000000000000002); seeking never floors
-  $("#jumpInput").value = String(round6(state.time));
+  // echo the exact playhead position into the jump box, verbatim: no
+  // rounding, so pressing Go re-seeks to precisely this instant
+  $("#jumpInput").value = String(state.time);
   const svg = document.querySelector("svg.tl");
   if (!svg) return;
   const x = state.labelW + state.headPad +
@@ -382,8 +380,9 @@ function updateClockAndHead() {
 
 async function requestEval(immediate) {
   // the playhead is an arbitrary non-negative (possibly fractional) ms
-  // value; send it verbatim — no flooring anywhere in the chain
-  const tq = round6(state.time);
+  // value; send it verbatim — no rounding anywhere in the chain, so the
+  // readout always matches a direct /eval call for this exact instant
+  const tq = state.time;
   // identical time -> the result would be the same
   if (state.lastEvalTime === tq && state.readouts) return;
   // one in-flight request at a time; remember to re-run afterwards
@@ -410,7 +409,7 @@ async function requestEval(immediate) {
   state.lastEvalTime = tq;
   try {
     state.readouts = await api(
-      `/api/projects/${state.projectId}/eval?t=${encodeURIComponent(tq)}`);
+      `/api/projects/${state.projectId}/eval?t=${encodeURIComponent(String(tq))}`);
     renderReadouts();
   } catch (e) {
     toast(e.message);

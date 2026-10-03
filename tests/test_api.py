@@ -1,12 +1,14 @@
 import os
 import tempfile
 import unittest
+from fractions import Fraction
 
 os.environ["LIGHTS_DB"] = os.path.join(tempfile.mkdtemp(), "test_api.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import db  # noqa: E402
+from app.engine import Item, evaluate, resolve  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -182,6 +184,48 @@ class ApiTest(unittest.TestCase):
         items = {i["id"]: i for i in b["items"]}
         self.assertEqual(items[id_a]["interrupted_by"], id_b)
         self.assertIsNone(items[id_b]["interrupted_by"])
+
+    def test_eval_high_precision_time_verbatim(self):
+        # more than 6 fractional digits must reach the engine untouched —
+        # no fixed 6-decimal rounding anywhere before evaluation
+        self.client.post(f"{self.base}/items",
+                         json=abs_body(target=100, duration=1000))
+        r = self.client.get(f"{self.base}/eval", params={"t": "1.23456789"})
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["time_ms"], 1.23456789)
+        ch = body["channels"][0]
+        # 100 * t / 1000 with t = 123456789/100000000, computed exactly
+        self.assertEqual(ch["raw"], "123456789/1000000000")
+        self.assertEqual(ch["value"], 0)
+        # the old 6-decimal rounding of the same moment would differ
+        self.assertNotEqual(ch["raw"], str(Fraction("1.234568") / 10))
+
+    def test_eval_high_precision_matches_direct_eval(self):
+        # interface result == direct engine evaluation at the same instant,
+        # including a probe just past an interruption boundary
+        a = self.client.post(f"{self.base}/items",
+                             json=abs_body(target=3, duration=10)).json()
+        id_a = a["items"][0]["id"]
+        b = self.client.post(f"{self.base}/items",
+                             json=abs_body(target=103, duration=100, ms=5)).json()
+        id_b = b["items"][-1]["id"]
+        view = resolve([
+            Item(id_a, "L1", 1, 3, 10, "abs", start_ms=0),
+            Item(id_b, "L1", 1, 103, 100, "abs", start_ms=5),
+        ])
+        for text in ("1.23456789", "5.000000001", "7.5", "105"):
+            t = Fraction(text)
+            direct = evaluate(view, t)["L1|1"]
+            r = self.client.get(f"{self.base}/eval", params={"t": text})
+            self.assertEqual(r.status_code, 200, r.text)
+            body = r.json()
+            self.assertEqual(body["time_ms"], float(text) if t.denominator != 1
+                             else t.numerator)
+            ch = body["channels"][0]
+            self.assertEqual(ch["raw"], direct["raw"], text)
+            self.assertEqual(ch["value"], direct["value"], text)
+            self.assertEqual(ch["active_item_id"], direct["active_item_id"], text)
 
 
 if __name__ == "__main__":
