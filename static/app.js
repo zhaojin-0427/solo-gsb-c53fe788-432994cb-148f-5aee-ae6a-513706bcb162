@@ -61,11 +61,6 @@ function fmtTime(ms) {
   return `${(ms / 1000).toFixed(3)} s`;
 }
 
-function round6(x) {
-  // strip binary-float noise beyond microseconds without truncating
-  return Math.round(x * 1e6) / 1e6;
-}
-
 function toast(msg) {
   const t = $("#errorToast");
   t.textContent = msg;
@@ -314,6 +309,8 @@ function startDrag(evt) {
     state.dragging = false;
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    // settle on the exact release instant, like pause does
+    requestEval(true);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -362,9 +359,9 @@ function seekTo(t) {
 
 function updateClockAndHead() {
   $("#clock").textContent = fmtTime(state.time);
-  // show the exact playhead position (trimmed to 6 fractional digits just
-  // to avoid float noise like 1.5000000000000002); seeking never floors
-  $("#jumpInput").value = String(round6(state.time));
+  // echo the exact playhead position verbatim: no fixed-precision rounding
+  // anywhere in the chain, and seeking never floors
+  $("#jumpInput").value = String(state.time);
   const svg = document.querySelector("svg.tl");
   if (!svg) return;
   const x = state.labelW + state.headPad +
@@ -382,8 +379,9 @@ function updateClockAndHead() {
 
 async function requestEval(immediate) {
   // the playhead is an arbitrary non-negative (possibly fractional) ms
-  // value; send it verbatim — no flooring anywhere in the chain
-  const tq = round6(state.time);
+  // value; send it verbatim — no rounding anywhere in the chain, so the
+  // readout always matches a direct eval of the very same instant
+  const tq = state.time;
   // identical time -> the result would be the same
   if (state.lastEvalTime === tq && state.readouts) return;
   // one in-flight request at a time; remember to re-run afterwards

@@ -1,12 +1,14 @@
 import os
 import tempfile
 import unittest
+from fractions import Fraction
 
 os.environ["LIGHTS_DB"] = os.path.join(tempfile.mkdtemp(), "test_api.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import db  # noqa: E402
+from app.engine import round_half_up  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -143,6 +145,38 @@ class ApiTest(unittest.TestCase):
         ch = r.json()["channels"][0]
         self.assertEqual(ch["raw"], "1/2")
         self.assertEqual(ch["value"], 1)  # 0.5 rounds half up
+
+    def test_eval_high_precision_time_verbatim(self):
+        # more than 6 fractional digits must reach the engine untouched:
+        # no fixed 6-decimal rounding in the echo, dedup or request path
+        self.client.post(f"{self.base}/items",
+                         json=abs_body(target=180, duration=2000))
+        r = self.client.get(f"{self.base}/eval?t=1.23456789")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["time_ms"], 1.23456789)
+        # identical to evaluating the very same instant directly
+        exact = Fraction("1.23456789") * 180 / 2000
+        ch = body["channels"][0]
+        self.assertEqual(ch["raw"], str(exact))
+        self.assertEqual(ch["value"], round_half_up(exact))
+        # a chain that rounded to 6 decimals would have evaluated 1.234568
+        rounded = self.client.get(f"{self.base}/eval?t=1.234568").json()
+        self.assertNotEqual(rounded["channels"][0]["raw"], ch["raw"])
+
+    def test_eval_sub_microsecond_time_not_rounded_up(self):
+        # 44.9999999ms: rounding the playhead to 6 decimals would turn it
+        # into 45ms and flip the half-up display value from 4 to 5
+        self.client.post(f"{self.base}/items",
+                         json=abs_body(target=100, duration=1000))
+        body = self.client.get(f"{self.base}/eval?t=44.9999999").json()
+        self.assertEqual(body["time_ms"], 44.9999999)
+        ch = body["channels"][0]
+        self.assertEqual(ch["raw"], "449999999/100000000")
+        self.assertEqual(ch["value"], 4)
+        at45 = self.client.get(f"{self.base}/eval?t=45").json()
+        self.assertEqual(at45["channels"][0]["raw"], "9/2")
+        self.assertEqual(at45["channels"][0]["value"], 5)
 
     def test_eval_decimal_matches_integer_regression(self):
         self.client.post(f"{self.base}/items",
